@@ -1,0 +1,21 @@
+name = "sch-collect"
+main = "src/lib.rs"
+compatibility_date = "2026-08-15"
+
+# 1. Bind KV store for dynamic API authentication parameters
+[[kv_namespaces]]
+binding = "SCHWAB_STORE"
+id = "2204d89fb4bb4b96a401d7c748f81c12"
+
+# 2. Bind your D1 engine for your clean, pre-processed analytical targets
+[[d1_databases]]
+binding = "DB"
+database_name = "sch-collect"
+database_id = "47cf8eff-92f6-4d9d-afde-73ac3127bb8c"
+
+# 3. Schedule execution timers
+[triggers]
+crons = [
+  "*/20 * * * *",  # Renews credentials inside your KV store shell
+  "*/1 * * * *"    # Scrapes Schwab endpoints, pre-processes, and populates SQL rows
+]
