@@ -50,7 +50,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         let db = ctx.d1("DB")?;
         
         // Fetch the 500 newest records to return to your AWS analytics environment
-        let statement = db.prepare("SELECT symbol, bid_price, ask_price, last_price, scraped_at FROM stock_quotes ORDER BY scraped_at DESC LIMIT 500");
+        let statement = db.prepare("SELECT symbol, price, diff, scraped_at FROM stock_quotes ORDER BY scraped_at,symbol DESC LIMIT 500");
         let result = statement.all().await?;
         
         let rows: Vec<PreProcessedRow> = result.results()?;
@@ -178,13 +178,14 @@ async fn execute_market_scrape(env: &Env) -> Result<()> {
         
         // Loop through each symbol in the dictionary payload and write it down into SQL
         for (_ticker, data) in raw_data.quotes {
+            let kv_key = format!("last_price_{}", data.symbol);
             let curr_price = data.last_price.unwrap_or(0.0);
-            let last_price = match kv.get("last_price").text().await? {
+            let last_price = match kv.get(&kv_key).text().await? {
                 Some(value) => value.parse::<f64>().unwrap_or(curr_price),
-                None => return Err(worker::Error::from("Last price missing from storage during collection cycle")),
+                None => curr_price // If no previous price exists, assume price was not changed
             };
             let diff = (last_price - curr_price)/last_price * 100.0; // Calculate percentage difference
-            kv.put("last_price", &curr_price.to_string())?.execute().await?;
+            kv.put(&kv_key, &curr_price.to_string())?.execute().await?;
 
             let query = db.prepare(
                 "INSERT INTO stock_quotes (symbol, last_price, diff) VALUES (?1, ?2, ?3)"
@@ -198,6 +199,7 @@ async fn execute_market_scrape(env: &Env) -> Result<()> {
             .run()
             .await?;
         }
+        #[cfg(feature = "debugging")]
         console_log!("Data successfully normalized and saved into D1 Database storage rows.");
     }
     Ok(())
