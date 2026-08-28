@@ -32,40 +32,47 @@ struct PreProcessedRow {
     scraped_at: String,
 }
 
+fn check_authorized(req: &Request, ctx: &RouteContext<()>) -> bool {
+    req.headers().get("X-Secret-Key").ok().flatten() == ctx.secret("WORKER_SECRET").map(|s| s.to_string()).ok()
+}
+
 #[event(fetch)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let router = Router::new();
     let bucket = env.bucket("SCHWAB_BUCKET")?;
 
-    router.get_async("/fetch-processed-data", |req, ctx| async move {
-        // Simple API Key validation for security against unauthorized public hits
-        let headers = req.headers();
-        let auth_header = headers.get("X-AWS-Secret-Key")?.unwrap_or_default();
-        let expected_key = ctx.secret("AWS_WORKER_SECRET")?.to_string();
-
-        if auth_header != expected_key {
-            //return Response::error("Unauthorized AWS connection", 401);
-            console_log!("{auth_header} == {expected_key}");
+    router.get_async("/history:symbol", |req, ctx| async move {
+        if !check_authorized(&req, &ctx) {
+            return Response::error("Unauthorized connection", 401);
         }
 
         // Access the D1 Database binding named "DB"
         let db = ctx.d1("SCHWAB_DB")?;
         
+        let Some(symbol) = ctx.param("symbol") else {
+            return Response::error("Bad request parameters", 400);
+        };
+
         // Fetch the 500 newest records to return to your AWS analytics environment
-        let statement = db.prepare("SELECT symbol, price, diff, scraped_at FROM stock_quotes ORDER BY scraped_at,symbol DESC LIMIT 500");
-        let result = statement.all().await?;
-        
+        let statement = db.prepare(r#"
+            SELECT 
+                symbol, price, diff, scraped_at 
+                FROM stock_quotes  
+                WHERE symbol = ? 
+                ORDER BY scraped_at,symbol 
+                DESC 
+            LIMIT 500"#
+        );
+        let query = statement.bind(&[
+            symbol.into(),
+        ])?;
+        let result = query.all().await?;
         let rows: Vec<PreProcessedRow> = result.results()?;
         Response::from_json(&rows)
     })
     .post_async("/symbols", |req, ctx| async move {
-        // Simple API Key validation for security against unauthorized public hits
-        let headers = req.headers();
-        let auth_header = headers.get("X-AWS-Secret-Key")?.unwrap_or_default();
-        let expected_key = ctx.secret("AWS_WORKER_SECRET")?.to_string();
-
-        if auth_header != expected_key {
-            return Response::error("Unauthorized AWS connection", 401);
+        if !check_authorized(&req, &ctx) {
+            return Response::error("Unauthorized connection", 401);
         }
 
         // Parse the incoming JSON payload for symbols to track
@@ -78,14 +85,20 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         }
         Response::error("Missing 'symbols' in request body", 400)
     })
-    .get_async("/symbols", |_req, ctx| async move {
+    .get_async("/symbols", |req, ctx| async move {
+        if !check_authorized(&req, &ctx) {
+            return Response::error("Unauthorized connection", 401);
+        }
         let kv = ctx.kv("SCHWAB_STORE")?;
         let symbols = kv.get("symbols").text().await?;
         Response::from_json(&symbols)
     })
-    .get_async("/all_symbols", |_req, _ctx| {
+    .get_async("/all_symbols", |req, ctx| {
         let value = bucket.clone();
         async move {
+            if !check_authorized(&req, &ctx) {
+                return Response::error("Unauthorized connection", 401);
+            }
             if let Some(object) = value.get("all_tickers.txt").execute().await? {
                 if let Some(body) = object.body() {
                     return Response::from_bytes(body.bytes().await?);
@@ -189,7 +202,6 @@ async fn execute_market_scrape(env: &Env) -> Result<()> {
         None => return Err(worker::Error::from("Access token missing from storage during collection cycle")),
     };
 
-    // Symbols to track; customize this comma-separated list as required
     let target_url = format!("https://schwabapi.com{}", target_symbols);
 
     let headers = worker::Headers::new();
