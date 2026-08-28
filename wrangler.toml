@@ -1,5 +1,5 @@
 name = "sch-collect"
-main = "src/lib.rs"
+main = "build/worker/shim.mjs"
 compatibility_date = "2026-08-15"
 
 # 1. Bind KV store for dynamic API authentication parameters
@@ -9,9 +9,13 @@ id = "2204d89fb4bb4b96a401d7c748f81c12"
 
 # 2. Bind your D1 engine for your clean, pre-processed analytical targets
 [[d1_databases]]
-binding = "DB"
+binding = "SCHWAB_DB"
 database_name = "sch-collect"
 database_id = "47cf8eff-92f6-4d9d-afde-73ac3127bb8c"
+
+[[r2_buckets]]
+binding = "SCHWAB_BUCKET"
+bucket_name = "sch-collect"
 
 # 3. Schedule execution timers
 [triggers]
@@ -19,3 +23,12 @@ crons = [
   "*/20 * * * *",  # Renews credentials inside your KV store shell
   "*/1 * * * *"    # Scrapes Schwab endpoints, pre-processes, and populates SQL rows
 ]
+
+[secrets]
+required = [
+    "API_KEY",
+    "AWS_WORKER_SECRET"
+]
+[build]
+
+command = "cargo install -q worker-build && worker-build --release"

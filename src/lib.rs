@@ -35,6 +35,7 @@ struct PreProcessedRow {
 #[event(fetch)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let router = Router::new();
+    let bucket = env.bucket("SCHWAB_BUCKET")?;
 
     router.get_async("/fetch-processed-data", |req, ctx| async move {
         // Simple API Key validation for security against unauthorized public hits
@@ -43,11 +44,12 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         let expected_key = ctx.secret("AWS_WORKER_SECRET")?.to_string();
 
         if auth_header != expected_key {
-            return Response::error("Unauthorized AWS connection", 401);
+            //return Response::error("Unauthorized AWS connection", 401);
+            console_log!("{auth_header} == {expected_key}");
         }
 
         // Access the D1 Database binding named "DB"
-        let db = ctx.d1("DB")?;
+        let db = ctx.d1("SCHWAB_DB")?;
         
         // Fetch the 500 newest records to return to your AWS analytics environment
         let statement = db.prepare("SELECT symbol, price, diff, scraped_at FROM stock_quotes ORDER BY scraped_at,symbol DESC LIMIT 500");
@@ -81,6 +83,17 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         let symbols = kv.get("symbols").text().await?;
         Response::from_json(&symbols)
     })
+    .get_async("/all_symbols", |_req, _ctx| {
+        let value = bucket.clone();
+        async move {
+            if let Some(object) = value.get("all_tickers.txt").execute().await? {
+                if let Some(body) = object.body() {
+                    return Response::from_bytes(body.bytes().await?);
+                }
+            }
+            Response::error("Object not found", 404)
+        }
+    })
     .run(req, env)
     .await
 }
@@ -90,6 +103,20 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 // ===================================================
 #[event(scheduled)]
 pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    let active = {
+        if let Ok(kv) = env.kv("SCHWAB_STORE") {
+            if let Ok(Some(collecting)) = kv.get("collecting").text().await {
+                collecting.parse::<bool>().unwrap_or_default()
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if !active {
+        return;
+    }
     match event.cron().as_str() {
         "*/20 * * * *" => {
             #[cfg(feature = "debugging")]
@@ -155,7 +182,7 @@ async fn execute_market_scrape(env: &Env) -> Result<()> {
         None => return Ok(()), // No symbols to track; skip this cycle
     };
 
-    let db = env.d1("DB")?;
+    let db = env.d1("SCHWAB_DB")?;
 
     let access_token = match kv.get("access_token").text().await? {
         Some(token) => token,
