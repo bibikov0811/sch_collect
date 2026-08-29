@@ -29,6 +29,7 @@ required = [
     "API_KEY",
     "WORKER_SECRET"
 ]
+
 [build]
 command = "cargo install -q worker-build && worker-build --release"
 

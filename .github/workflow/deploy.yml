@@ -1,0 +1,7 @@
+- name: Setup Rust toolchain
+  uses: actions-rust-lang/setup-rust-toolchain@v1
+
+- name: Deploy to Cloudflare
+  uses: cloudflare/wrangler-action@v3
+  with:
+    apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

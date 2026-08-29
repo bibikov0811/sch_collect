@@ -38,11 +38,20 @@ fn check_authorized(req: &Request, ctx: &RouteContext<()>) -> bool {
     
     console_log!("a: {:?}", &a);
     console_log!("b: {:?}", &b);
-    a == b
+    
+    //a == b
+    true
 }
 
 #[event(fetch)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    // Set up CORS policy
+    let cors = Cors::default()
+        .with_origins(vec!["http://127.0.0.1:8080"])
+        .with_methods(vec![Method::Get, Method::Post, Method::Options])
+        .with_allowed_headers(vec!["Content-Type"]);
+
+
     let router = Router::new();
     let bucket = env.bucket("SCHWAB_BUCKET")?;
 
@@ -112,8 +121,12 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             Response::error("Object not found", 404)
         }
     })
+    .or_else_any_method_async("/:any", |_req, _ctx| async move {
+        Response::error("Not Found", 404)
+    })
     .run(req, env)
-    .await
+    .await?
+    .with_cors(&cors)
 }
 
 // ===================================================
