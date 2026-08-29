@@ -33,7 +33,12 @@ struct PreProcessedRow {
 }
 
 fn check_authorized(req: &Request, ctx: &RouteContext<()>) -> bool {
-    req.headers().get("X-Secret-Key").ok().flatten() == ctx.secret("WORKER_SECRET").map(|s| s.to_string()).ok()
+    let a = req.headers().get("X-Secret-Key").ok().flatten();
+    let b = ctx.secret("WORKER_SECRET").map(|s| s.to_string()).ok();
+    
+    console_log!("a: {:?}", &a);
+    console_log!("b: {:?}", &b);
+    a == b
 }
 
 #[event(fetch)]
