@@ -27,8 +27,8 @@ crons = [
 [secrets]
 required = [
     "API_KEY",
-    "AWS_WORKER_SECRET"
+    "WORKER_SECRET"
 ]
 [build]
-
 command = "cargo install -q worker-build && worker-build --release"
+
