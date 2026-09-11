@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose, Engine as _};
 use bcrypt::verify;
-use jsonwebtoken::{encode, Header, EncodingKey, decode, DecodingKey, Validation};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use worker::*;
@@ -17,20 +17,24 @@ struct AuthResponse {
     message: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Claims {
-    sub: String,  // User ID
-    exp: usize,   // Expiry time (Timestamp)
+    sub: String, // User ID
+    exp: usize,  // Expiry time (Timestamp)
+    iat: usize,  // Issued at (as timestamp)
 }
 
 pub async fn handle_login(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     // 1. Parse the JSON body sent from Dioxus
     let payload: LoginPayload = req.json().await?;
-    
+
     // 2. Fetch the user from your database binding (e.g., Cloudflare D1)
     let d1 = ctx.env.d1("SCHWAB_DB")?; // Looks up the "SCHWAB_DB" binding in wrangler.toml
     let statement = d1.prepare("SELECT id, password_hash FROM users WHERE email = ?1");
-    let query_result = statement.bind(&[payload.email.into()])?.first::<serde_json::Value>(Some("email")).await?;
+    let query_result = statement
+        .bind(&[payload.email.into()])?
+        .first::<serde_json::Value>(Some("email"))
+        .await?;
 
     let user_row = match query_result {
         Some(row) => row,
@@ -48,18 +52,21 @@ pub async fn handle_login(mut req: Request, ctx: RouteContext<()>) -> Result<Res
     // 4. Generate a JWT Token
     // Fetch a secure secret key from Cloudflare secrets (configured via wrangler secret put)
     let secret = ctx.env.secret("JWT_SECRET")?.to_string();
-    
-    let expiration = Date::now().as_millis() as usize / 1000 + 86400; // Expires in 24 hours
+
+    let issued_at = Date::now().as_millis() as usize / 1000;
+    let expiration = issued_at + 86400; // Expires in 24 hours
     let claims = Claims {
         sub: user_id.to_string(),
         exp: expiration,
+        iat: issued_at,
     };
 
     let token = encode(
         &jsonwebtoken::Header::default(),
-   e, no      &claims,
-        &EncodingKey::from_secret(secret.as_bytes())
-    ).map_err(|e| worker::Error::from(e.to_string()))?;
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .map_err(|e| worker::Error::from(e.to_string()))?;
 
     // 5. Respond back to Dioxus
     Response::from_json(&AuthResponse {
@@ -71,14 +78,15 @@ pub async fn handle_login(mut req: Request, ctx: RouteContext<()>) -> Result<Res
 fn get_user_id_from_request(req: &Request, ctx: &RouteContext<()>) -> Result<String> {
     // 1. Pull the Authorization header
     let headers = req.headers();
-    let auth_header = headers.get("Authorization")?
+    let auth_header = headers
+        .get("Authorization")?
         .ok_or_else(|| worker::Error::from("Missing Authorization Header"))?;
 
     // Expecting format: "Bearer <token>"
     if !auth_header.starts_with("Bearer ") {
         return Err(worker::Error::from("Invalid Token Format"));
     }
-    let token = &auth_header[7..];
+    let token = auth_header.trim_start_matches("Bearer ");
 
     // 2. Decode and Validate JWT
     let secret = ctx.env.secret("JWT_SECRET")?.to_string();
@@ -86,7 +94,8 @@ fn get_user_id_from_request(req: &Request, ctx: &RouteContext<()>) -> Result<Str
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
         &Validation::default(),
-    ).map_err(|_| worker::Error::from("Invalid or Expired Token"))?;
+    )
+    .map_err(|_| worker::Error::from("Invalid or Expired Token"))?;
 
     // Return the validated User ID
     Ok(token_data.claims.sub)
@@ -121,10 +130,21 @@ struct PreProcessedRow {
     scraped_at: String,
 }
 
-fn check_authorized(req: &Request, ctx: &RouteContext<()>) -> bool {
-    let a = req.headers().get("X-Secret-Key").ok().flatten();
-    let b = ctx.secret("WORKER_SECRET").map(|s| s.to_string()).ok();
-    a == b
+async fn check_authorized(req: &Request, ctx: &RouteContext<()>) -> bool {
+    let Ok(user_id) = get_user_id_from_request(req, ctx) else {
+        return false;
+    };
+    let Ok(d1) = ctx.env.d1("SCHWAB_DB") else {
+        return false;
+    };
+    let statement = d1.prepare("SELECT count(*) FROM users WHERE email = ?1");
+    let Ok(statement) = statement.bind(&[user_id.into()]) else {
+        return false;
+    };
+    let Ok(query_result) = statement.first::<serde_json::Value>(Some("email")).await else {
+        return false;
+    };
+    query_result.is_some_and(|x| x.as_u64().unwrap_or_default() > 0)
 }
 
 #[event(fetch)]
@@ -149,10 +169,11 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
     // get last 500 ticks for requested symbol
     router
+        .post_async("/login", handle_login)
         .get_async("/history/:symbol", |req, ctx| {
             let cors = cors.clone();
             async move {
-                if !check_authorized(&req, &ctx) {
+                if !check_authorized(&req, &ctx).await {
                     return Response::error("Unauthorized connection", 401);
                 }
 
@@ -184,7 +205,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         })
         // symbols to track
         .put_async("/symbols", |req, ctx| async move {
-            if !check_authorized(&req, &ctx) {
+            if !check_authorized(&req, &ctx).await {
                 return Response::error("Unauthorized connection", 401);
             }
 
@@ -201,7 +222,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/symbols", |req, ctx| {
             let cors = cors.clone();
             async move {
-                if !check_authorized(&req, &ctx) {
+                if !check_authorized(&req, &ctx).await {
                     return Response::error("Unauthorized connection", 401);
                 }
                 let kv = ctx.kv("SCHWAB_STORE")?;
@@ -216,7 +237,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         })
         // 'true' or 'false' flag for switching on and off data collection from schwab developer api
         .put_async("/collecting", |req, ctx| async move {
-            if !check_authorized(&req, &ctx) {
+            if !check_authorized(&req, &ctx).await {
                 return Response::error("Unauthorized connection", 401);
             }
 
@@ -242,7 +263,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/collecting", |req, ctx| {
             let cors = cors.clone();
             async move {
-                if !check_authorized(&req, &ctx) {
+                if !check_authorized(&req, &ctx).await {
                     return Response::error("Unauthorized connection", 401);
                 }
                 let kv = ctx.kv("SCHWAB_STORE")?;
@@ -260,7 +281,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             let value = bucket.clone();
             let cors = cors.clone();
             async move {
-                if !check_authorized(&req, &ctx) {
+                if !check_authorized(&req, &ctx).await {
                     return Response::error("Unauthorized connection", 401);
                 }
                 if let Some(object) = value.get("all_tickers.txt").execute().await? {
