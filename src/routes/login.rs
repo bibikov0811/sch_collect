@@ -72,7 +72,7 @@ fn get_user_id_from_request(req: &Request, ctx: &RouteContext<()>) -> Result<Str
     let token = auth_header.trim_start_matches("Bearer ");
 
     // 2. Decode and Validate JWT
-    let secret = ctx.env.secret("JWT_SECRET")?.to_string();
+    let secret = ctx.secret("JWT_SECRET")?.to_string();
     let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
