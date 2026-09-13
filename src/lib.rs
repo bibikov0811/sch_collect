@@ -27,10 +27,8 @@ struct SchwabSymbolData {
     last_price: Option<f64>,
 }
 
-#[event(fetch)]
-pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    // Set up CORS policy
-    let cors = Cors::default()
+pub(crate) fn cors() -> Cors {
+    Cors::default()
         .with_origins(vec!["http://127.0.0.1:8080"])
         .with_methods(vec![Method::Get, Method::Put, Method::Options])
         .with_allowed_headers(vec![
@@ -38,10 +36,13 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             "Authorization",
             "Cache-Control",
             "X-Secret-Key",
-        ]);
+        ])
+}
 
+#[event(fetch)]
+pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     if matches!(req.method(), Method::Options) {
-        return Response::empty()?.with_cors(&cors);
+        return Response::empty()?.with_cors(&cors());
     }
 
     let router = Router::new();
@@ -52,24 +53,24 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             let cors = cors.clone();
             async move {
                 let response = handle_login(req, ctx).await?;
-                return response.with_cors(&cors);
+                return response.with_cors(&cors());
             }
         })
         .get_async("/history/:symbol", |req, ctx| {
             let cors = cors.clone();
             async move {
                 if !check_authorized(&req, &ctx).await {
-                    return Response::error("Unauthorized connection", 401);
+                    return Response::error("Unauthorized connection", 401)?.with_cors(&cors());
                 }
 
                 let response = handle_history(req, ctx).await?;
-                return response.with_cors(&cors);
+                return response.with_cors(&cors());
             }
         })
         // symbols to track
         .put_async("/symbols", |req, ctx| async move {
             if !check_authorized(&req, &ctx).await {
-                return Response::error("Unauthorized connection", 401);
+                return Response::error("Unauthorized connection", 401)?.with_cors(&cors());
             }
 
             // Parse the incoming JSON payload for symbols to track
@@ -78,15 +79,15 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             if let Some(symbols) = body.get("symbols") {
                 let kv = ctx.kv("SCHWAB_STORE")?;
                 kv.put("symbols", symbols)?.execute().await?;
-                return Response::ok("Symbols updated successfully");
+                return Response::ok("Symbols updated successfully")?.with_cors(&cors());
             }
-            Response::error("Missing 'symbols' in request body", 400)
+            Response::error("Missing 'symbols' in request body", 400)?.with_cors(&cors())
         })
         .get_async("/symbols", |req, ctx| {
             let cors = cors.clone();
             async move {
                 if !check_authorized(&req, &ctx).await {
-                    return Response::error("Unauthorized connection", 401);
+                    return Response::error("Unauthorized connection", 401)?.with_cors(&cors());
                 }
                 let kv = ctx.kv("SCHWAB_STORE")?;
                 let symbols = kv.get("symbols").text().await?.unwrap_or_default();
@@ -95,13 +96,13 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 let headers = Headers::new();
                 let _ = headers.append("Content-Type", "application/text");
                 let _ = headers.append("Cache-Control", "private, no-cache");
-                return response.with_headers(headers).with_cors(&cors);
+                return response.with_headers(headers).with_cors(&cors());
             }
         })
         // 'true' or 'false' flag for switching on and off data collection from schwab developer api
         .put_async("/collecting", |req, ctx| async move {
             if !check_authorized(&req, &ctx).await {
-                return Response::error("Unauthorized connection", 401);
+                return Response::error("Unauthorized connection", 401)?.with_cors(&cors());
             }
 
             let mut req = req;
@@ -111,23 +112,25 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 match value.parse::<bool>() {
                     Ok(true) => {
                         kv.put("collecting", "true")?.execute().await?;
-                        return Response::ok("data collection started");
+                        return Response::ok("data collection started")?.with_cors(&cors());
                     }
                     Ok(false) => {
                         kv.put("collecting", "false")?.execute().await?;
-                        return Response::ok("data collection stopped");
+                        return Response::ok("data collection stopped")?.with_cors(&cors());
                     }
-                    _ => return Response::error("value should be \"true\" or \"false\"", 400),
+                    _ => {
+                        return Response::error("value should be \"true\" or \"false\"", 400)?.with_cors(&cors());
+                    },
                 };
             } else {
-                return Response::error("Missing \"value\" field in request body", 400);
+                return Response::error("Missing \"value\" field in request body", 400)?.with_cors(&cors());
             }
         })
         .get_async("/collecting", |req, ctx| {
             let cors = cors.clone();
             async move {
                 if !check_authorized(&req, &ctx).await {
-                    return Response::error("Unauthorized connection", 401);
+                    return Response::error("Unauthorized connection", 401)?.with_cors(&cors());
                 }
                 let kv = ctx.kv("SCHWAB_STORE")?;
                 let collecting = kv.get("collecting").text().await?.unwrap_or_default();
@@ -136,7 +139,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 let headers = Headers::new();
                 let _ = headers.append("Content-Type", "application/text");
                 let _ = headers.append("Cache-Control", "private, no-cache");
-                return response.with_headers(headers).with_cors(&cors);
+                return response.with_headers(headers).with_cors(&cors());
             }
         })
         // just text file with list of all market symbols
@@ -154,14 +157,14 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                         let headers = Headers::new();
                         let _ = headers.append("Content-Type", "application/text");
                         let _ = headers.append("Cache-Control", "public, max-age=3600");
-                        return response.with_headers(headers).with_cors(&cors);
+                        return response.with_headers(headers).with_cors(&cors());
                     }
                 }
-                Response::error("Object not found", 404)
+                Response::error("Object not found", 404)?.with_cors(&cors())
             }
         })
         .or_else_any_method_async("/:any", |_req, _ctx| async move {
-            Response::error("Not Found", 404)
+            Response::error("Not Found", 404)?.with_cors(&cors())
         })
         .run(req, env)
         .await

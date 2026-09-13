@@ -4,20 +4,39 @@ use jsonwebtoken::{DecodingKey, EncodingKey, Validation, decode, encode};
 use worker::*;
 
 pub(crate) async fn check_authorized(req: &Request, ctx: &RouteContext<()>) -> bool {
-    let Ok(user_id) = get_user_id_from_request(req, ctx) else {
-        return false;
+    let user_id = match get_user_id_from_request(req, ctx) {
+        Ok(x) => x,
+        Err(err) => {
+            worker::console_error!("get_user_id_from_request failed: {}", err.to_string());
+            return false;
+        }
     };
     let Ok(d1) = ctx.env.d1("SCHWAB_DB") else {
+        worker::console_error!("Cannot connect to database");
         return false;
     };
     let statement = d1.prepare("SELECT count(*) FROM users WHERE email = ?1");
-    let Ok(statement) = statement.bind(&[user_id.into()]) else {
+    let uid = user_id.clone();
+    let Ok(statement) = statement.bind(&[uid.into()]) else {
+        worker::console_error!("cannot prepare request to database for {}", &user_id);
         return false;
     };
     let Ok(query_result) = statement.first::<serde_json::Value>(Some("email")).await else {
+        worker::console_error!("cannot read from the required database table column");
         return false;
     };
-    query_result.is_some_and(|x| x.as_u64().unwrap_or_default() > 0)
+    query_result.is_some_and(|x| {
+        match x.as_u64() {
+            Some(number) => {
+                worker::console_debug!("number of requested users: {number}");
+                number > 0
+            }
+            _ => {
+                worker::console_error!("database query result for {} is None", &user_id);
+                false
+            }
+        }
+    })
 }
 
 #[derive(Deserialize)]
