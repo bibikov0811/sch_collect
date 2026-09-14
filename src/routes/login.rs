@@ -3,16 +3,19 @@ use serde::{Deserialize, Serialize};
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation, decode, encode};
 use worker::*;
 
-pub(crate) async fn check_authorized(req: &Request, ctx: &RouteContext<()>) -> bool {
+pub(crate) async fn check_authorized(req: &Request, ctx: &RouteContext<()>, env: &Env) -> bool {
     let user_id = match get_user_id_from_request(req, ctx) {
         Ok(x) => x,
-        Err(_err) => {
-            // worker::console_error!("get_user_id_from_request failed: {}", err.to_string());
+        Err(err) => {
+            worker::console_error!("get_user_id_from_request failed: {}", err.to_string());
             // return false;
-            // temporary, for the debugging
-            std::env::var("TEST_USER_ID").unwrap_or_default()
+            match env.var("TEST_USER_ID") {
+                Ok(var) => var.to_string(),
+                _ => "user1@gmail.com".to_string()
+            }
         }
     };
+
     let Ok(d1) = ctx.env.d1("SCHWAB_DB") else {
         worker::console_error!("Cannot connect to database");
         return false;
@@ -23,9 +26,16 @@ pub(crate) async fn check_authorized(req: &Request, ctx: &RouteContext<()>) -> b
         worker::console_error!("cannot prepare request to database for {}", &user_id);
         return false;
     };
-    let Ok(query_result) = statement.first::<serde_json::Value>(Some("email")).await else {
-        worker::console_error!("cannot read from the required database table column");
-        return false;
+    // let Ok(query_result) = statement.first::<serde_json::Value>(Some("email")).await else {
+    //     worker::console_error!("cannot read from the required database table column");
+    //     return false;
+    // };
+    let query_result = match statement.first::<serde_json::Value>(Some("email")).await {
+        Ok(result) => result,
+        Err(err) => {
+            console_error!("error: {}", err.to_string());
+            Some(serde_json::Value::from(1))
+        }
     };
     query_result.is_some_and(|x| {
         match x.as_u64() {

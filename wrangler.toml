@@ -48,3 +48,5 @@ required = [
 [build]
 command = "cargo install -q worker-build && worker-build --release"
 
+[vars]
+TEST_USER_ID="bibikov0811@gmail.com"

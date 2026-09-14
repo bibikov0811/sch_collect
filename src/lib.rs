@@ -1,10 +1,10 @@
 mod routes;
 
 use base64::{engine::general_purpose, Engine as _};
+use routes::*;
 use serde::Deserialize;
 use std::collections::HashMap;
-use worker::*;
-use routes::*; // all routes here
+use worker::*; // all routes here
 
 // --- Serialization Structs ---
 #[derive(Deserialize)]
@@ -58,8 +58,9 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         })
         .get_async("/history/:symbol", |req, ctx| {
             let cors = cors.clone();
+            let env = env.clone();
             async move {
-                if !check_authorized(&req, &ctx).await {
+                if !check_authorized(&req, &ctx, &env).await {
                     return Response::error("Unauthorized connection", 401)?.with_cors(&cors());
                 }
 
@@ -68,25 +69,29 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             }
         })
         // symbols to track
-        .put_async("/symbols", |req, ctx| async move {
-            if !check_authorized(&req, &ctx).await {
-                return Response::error("Unauthorized connection", 401)?.with_cors(&cors());
-            }
+        .put_async("/symbols", |req, ctx| {
+            let env = env.clone();
+            async move {
+                if !check_authorized(&req, &ctx, &env).await {
+                    return Response::error("Unauthorized connection", 401)?.with_cors(&cors());
+                }
 
-            // Parse the incoming JSON payload for symbols to track
-            let mut req = req;
-            let body: HashMap<String, String> = req.json().await?;
-            if let Some(symbols) = body.get("symbols") {
-                let kv = ctx.kv("SCHWAB_STORE")?;
-                kv.put("symbols", symbols)?.execute().await?;
-                return Response::ok("Symbols updated successfully")?.with_cors(&cors());
+                // Parse the incoming JSON payload for symbols to track
+                let mut req = req;
+                let body: HashMap<String, String> = req.json().await?;
+                if let Some(symbols) = body.get("symbols") {
+                    let kv = ctx.kv("SCHWAB_STORE")?;
+                    kv.put("symbols", symbols)?.execute().await?;
+                    return Response::ok("Symbols updated successfully")?.with_cors(&cors());
+                }
+                Response::error("Missing 'symbols' in request body", 400)?.with_cors(&cors())
             }
-            Response::error("Missing 'symbols' in request body", 400)?.with_cors(&cors())
         })
         .get_async("/symbols", |req, ctx| {
             let cors = cors.clone();
+            let env = env.clone();
             async move {
-                if !check_authorized(&req, &ctx).await {
+                if !check_authorized(&req, &ctx, &env).await {
                     return Response::error("Unauthorized connection", 401)?.with_cors(&cors());
                 }
                 let kv = ctx.kv("SCHWAB_STORE")?;
@@ -100,36 +105,42 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             }
         })
         // 'true' or 'false' flag for switching on and off data collection from schwab developer api
-        .put_async("/collecting", |req, ctx| async move {
-            if !check_authorized(&req, &ctx).await {
-                return Response::error("Unauthorized connection", 401)?.with_cors(&cors());
-            }
+        .put_async("/collecting", |req, ctx| {
+            let env = env.clone();
+            async move {
+                if !check_authorized(&req, &ctx, &env).await {
+                    return Response::error("Unauthorized connection", 401)?.with_cors(&cors());
+                }
 
-            let mut req = req;
-            let body: HashMap<String, String> = req.json().await?;
-            if let Some(value) = body.get("value") {
-                let kv = ctx.kv("SCHWAB_STORE")?;
-                match value.parse::<bool>() {
-                    Ok(true) => {
-                        kv.put("collecting", "true")?.execute().await?;
-                        return Response::ok("data collection started")?.with_cors(&cors());
-                    }
-                    Ok(false) => {
-                        kv.put("collecting", "false")?.execute().await?;
-                        return Response::ok("data collection stopped")?.with_cors(&cors());
-                    }
-                    _ => {
-                        return Response::error("value should be \"true\" or \"false\"", 400)?.with_cors(&cors());
-                    },
-                };
-            } else {
-                return Response::error("Missing \"value\" field in request body", 400)?.with_cors(&cors());
+                let mut req = req;
+                let body: HashMap<String, String> = req.json().await?;
+                if let Some(value) = body.get("value") {
+                    let kv = ctx.kv("SCHWAB_STORE")?;
+                    match value.parse::<bool>() {
+                        Ok(true) => {
+                            kv.put("collecting", "true")?.execute().await?;
+                            return Response::ok("data collection started")?.with_cors(&cors());
+                        }
+                        Ok(false) => {
+                            kv.put("collecting", "false")?.execute().await?;
+                            return Response::ok("data collection stopped")?.with_cors(&cors());
+                        }
+                        _ => {
+                            return Response::error("value should be \"true\" or \"false\"", 400)?
+                                .with_cors(&cors());
+                        }
+                    };
+                } else {
+                    return Response::error("Missing \"value\" field in request body", 400)?
+                        .with_cors(&cors());
+                }
             }
         })
         .get_async("/collecting", |req, ctx| {
             let cors = cors.clone();
+            let env = env.clone();
             async move {
-                if !check_authorized(&req, &ctx).await {
+                if !check_authorized(&req, &ctx, &env).await {
                     return Response::error("Unauthorized connection", 401)?.with_cors(&cors());
                 }
                 let kv = ctx.kv("SCHWAB_STORE")?;
@@ -146,8 +157,9 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/all_symbols", |req, ctx| {
             let value = bucket.clone();
             let cors = cors.clone();
+            let env = env.clone();
             async move {
-                if !check_authorized(&req, &ctx).await {
+                if !check_authorized(&req, &ctx, &env).await {
                     return Response::error("Unauthorized connection", 401);
                 }
                 if let Some(object) = value.get("all_tickers.txt").execute().await? {
@@ -166,7 +178,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .or_else_any_method_async("/:any", |_req, _ctx| async move {
             Response::error("Not Found", 404)?.with_cors(&cors())
         })
-        .run(req, env)
+        .run(req, env.clone())
         .await
 }
 
