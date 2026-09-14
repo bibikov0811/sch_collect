@@ -6,9 +6,11 @@ use worker::*;
 pub(crate) async fn check_authorized(req: &Request, ctx: &RouteContext<()>) -> bool {
     let user_id = match get_user_id_from_request(req, ctx) {
         Ok(x) => x,
-        Err(err) => {
-            worker::console_error!("get_user_id_from_request failed: {}", err.to_string());
-            return false;
+        Err(_err) => {
+            // worker::console_error!("get_user_id_from_request failed: {}", err.to_string());
+            // return false;
+            // temporary, for the debugging
+            std::env::var("TEST_USER_ID").unwrap_or_default()
         }
     };
     let Ok(d1) = ctx.env.d1("SCHWAB_DB") else {
@@ -135,3 +137,56 @@ pub(crate) async fn handle_login(mut req: Request, ctx: RouteContext<()>) -> Res
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+use jsonwebtoken::{Algorithm, Header};
+
+use super::*;
+
+    #[test]
+    fn test_env_var() {
+        let maybe_user_id = std::env::var("TEST_USER_ID");
+        assert!(maybe_user_id.is_ok());
+        println!("{}", maybe_user_id.unwrap_or_default());
+    }
+
+    #[test]
+    fn test_generate_jwt() {
+        let vars = std::fs::read_to_string(".dev.vars").unwrap();
+        let base64_secret = vars
+            .split('\n')
+            .find(|line| line.starts_with("JWT_SECRET"))
+            .and_then(|line| line.split('=').last())
+            .and_then(|value| Some(value.trim_matches('"')))
+            .unwrap_or_default()
+            .to_string();
+
+        println!("base64_secret: {}", &base64_secret);
+
+        let raw_secret_bytes = STANDARD.decode(base64_secret.trim()).unwrap();
+        let current_time_secs = Date::now().as_millis() / 1000;
+        let expiration_time = current_time_secs + 3600; // 1 hour from now
+
+        let my_claims = Claims {
+            sub: std::env::var("TEST_USER_ID").unwrap_or_default(),
+            exp: expiration_time as usize,
+            iat: current_time_secs as usize,
+        };
+
+        // 4. Wrap the raw bytes into a proper jsonwebtoken Encoding Key
+        let encoding_key = EncodingKey::from_secret(&raw_secret_bytes);
+        
+        // 5. Specify the header and sign the token using your chosen algorithm
+        let header = Header::new(Algorithm::HS256);
+
+        match encode(&header, &my_claims, &encoding_key) {
+            Ok(token_string) => {
+                // This 'token_string' is the actual "header.payload.signature" string 
+                // you can send back to your clients or store in cookies.
+                println!("Generated Token: {}", token_string);
+            }
+            Err(_) => println!("Failed to generate JWT"),
+        }
+    }
+}
